@@ -20,14 +20,16 @@ function load(file, globals = {}) {
 const Safe = load("Safe.js")
 const Commands = load("Commands.js", { Safe })
 
-test("repoUrl accepts https github.com repos only, normalized", () => {
+test("repoUrl accepts https GitHub and Forgejo repos, normalized", () => {
   const want = "https://github.com/chyld/notes.git"
   for (const ok of ["https://github.com/chyld/notes", "https://github.com/chyld/notes.git",
                     "https://github.com/chyld/notes/", "  https://github.com/chyld/notes  "])
     assert.equal(Safe.repoUrl(ok), want, ok)
   assert.equal(Safe.repoUrl("https://github.com/a-b/my.vault_2"), "https://github.com/a-b/my.vault_2.git")
+  assert.equal(Safe.repoUrl("https://Codeberg.org/you/notes"), "https://codeberg.org/you/notes.git")
+  assert.equal(Safe.repoUrl("https://git.example.com:3000/a.b_c/notes.git/"), "https://git.example.com:3000/a.b_c/notes.git")
   for (const bad of ["", "http://github.com/chyld/notes", "git@github.com:chyld/notes.git",
-                     "https://gitlab.com/chyld/notes", "https://github.com/chyld", "https://github.com/chyld/..",
+                     "https://git.example.com:0/a/b", "https://git.example.com:99999/a/b", "https://-x.example.com/a/b", "https://example/a/b", "https://github.com/chyld", "https://github.com/chyld/..",
                      "https://github.com/-x/notes", "https://github.com/chyld/notes/tree/main",
                      "https://github.com/chyld/no tes", "https://user@github.com/chyld/notes",
                      "https://github.com/chyld/notes?x=1", "https://github.com/chyld/no\ntes", 42, null])
@@ -38,6 +40,12 @@ test("repoSlug and repoPage", () => {
   assert.equal(Safe.repoSlug("https://github.com/chyld/notes.git"), "chyld/notes")
   assert.equal(Safe.repoPage("https://github.com/chyld/notes"), "https://github.com/chyld/notes")
   assert.equal(Safe.repoPage("nope"), "")
+  assert.equal(Safe.repoSlug("https://git.example.com:3000/you/notes"), "you/notes")
+  assert.equal(Safe.repoPage("https://git.example.com:3000/you/notes.git"), "https://git.example.com:3000/you/notes")
+  assert.equal(Safe.repoHost("https://git.example.com:3000/you/notes"), "git.example.com:3000")
+  assert.equal(Safe.hostName("https://github.com/you/notes"), "GitHub")
+  assert.equal(Safe.hostName("https://codeberg.org/you/notes"), "codeberg.org")
+  assert.ok(Safe.isGitHub("https://github.com/you/notes") && !Safe.isGitHub("https://codeberg.org/you/notes"))
 })
 
 test("vaultPath wants a clean absolute path", () => {
@@ -201,6 +209,9 @@ test("the engine and helpers run from the system Python in isolated mode", () =>
   assert.equal(curl[1], "-q")
   assert.ok(!curl.includes("-L"))
   assert.deepEqual(curl.slice(-2), ["--", "https://api.github.com/repos/chyld/notes"])
+  assert.deepEqual([...Commands.visibility("https://codeberg.org/you/notes")].slice(-2),
+                   ["--", "https://codeberg.org/api/v1/repos/you/notes"])
+  assert.equal(Commands.visibility("https://codeberg.org/you"), null)
   assert.deepEqual([...Commands.openUrl("/usr/share/omarchy", "https://github.com/chyld/notes.git")],
                    ["/usr/share/omarchy/bin/omarchy-launch-browser", "https://github.com/chyld/notes"])
 })

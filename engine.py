@@ -74,20 +74,44 @@ class Failure(Exception):
 
 # ------------------------------------------------------------ validation
 
+REPO_URL = re.compile(r"https://((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}|localhost)"
+                      r"(?::([0-9]{1,5}))?/([A-Za-z0-9][A-Za-z0-9._-]{0,38})/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?")
+
+# The repository's host for messages: "GitHub", else the host. Set by main().
+HOST = "GitHub"
+
+
 def repo_url(value):
-    """https://github.com/<owner>/<repo>, normalized to ...<repo>.git, or ""."""
-    m = re.fullmatch(r"https://github\.com/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100}?)(?:\.git)?/?",
-                     value.strip())
-    if not m or m.group(2) in (".", ".."):
+    """https://<host>/<owner>/<repo> on GitHub or a Forgejo/Gitea server,
+    normalized to ...<repo>.git with the host lowercased, or ""."""
+    m = REPO_URL.fullmatch(value.strip())
+    if not m or m.group(4) in (".", ".."):
         return ""
-    return f"https://github.com/{m.group(1)}/{m.group(2)}.git"
+    port = m.group(2)
+    if port is not None and not 1 <= int(port) <= 65535:
+        return ""
+    host = m.group(1).lower() + (f":{int(port)}" if port is not None else "")
+    return f"https://{host}/{m.group(3)}/{m.group(4)}.git"
+
+
+def repo_host(url):
+    """The host (with any port) of a URL that passed repo_url()."""
+    return url[len("https://"):].split("/", 1)[0]
+
+
+def host_name(url):
+    """GitHub for github.com, else the host itself."""
+    host = repo_host(url)
+    return "GitHub" if host == "github.com" else host
 
 
 def sync_refs(url):
-    """refs/vault-sync/<owner>/<repo>: where a vault keeps its sync state for
-    one repository. A part git would refuse gets a leading "_"."""
-    owner, repo = url[len("https://github.com/"):-len(".git")].split("/")
-    parts = ["_" + p if p.startswith(".") or p.endswith(".lock") else p for p in (owner, repo)]
+    """refs/vault-sync/<owner>/<repo> on GitHub, else
+    refs/vault-sync/<host>/<owner>/<repo>: where a vault keeps its sync state
+    for one repository. A part git would refuse gets a leading "_"."""
+    host, owner, repo = url[len("https://"):-len(".git")].split("/")
+    parts = [owner, repo] if host == "github.com" else [host.replace(":", "_"), owner, repo]
+    parts = ["_" + p if p.startswith(".") or p.endswith(".lock") else p for p in parts]
     return "refs/vault-sync/" + "/".join(parts)
 
 
@@ -170,18 +194,20 @@ def commit_message(files, when):
 def git_error(stderr):
     """A short, readable reason from a failed git command's stderr."""
     s = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else str(stderr)
+    login = ("GitHub login needed. Run gh auth login, then gh auth setup-git, in a terminal." if HOST == "GitHub" else
+             f"{HOST} login needed. Store an access token in a git credential helper for {HOST}.")
     checks = [
         (r"could not read Username|Authentication failed|terminal prompts disabled|Invalid username or (password|token)",
-         "GitHub login needed. Run gh auth login, then gh auth setup-git, in a terminal."),
-        (r"Repository not found|repository '.*' not found", "Repository not found, or your GitHub account can't access it."),
+         login),
+        (r"Repository not found|repository '.*' not found", f"Repository not found, or your {HOST} account can't access it."),
         (r"Could not resolve host|Failed to connect|Connection timed out|Network is unreachable",
-         "Can't reach GitHub. Check your connection."),
+         f"Can't reach {HOST}. Check your connection."),
         (r"Please tell me who you are|empty ident", "Git needs your name and email. Run git config --global user.name and user.email."),
         (r"Your local changes to the following files would be overwritten",
          "A note changed while syncing. Sync again."),
         (r"untracked working tree files would be overwritten",
-         "GitHub has files that would overwrite files in the vault that aren't synced (such as .obsidian)."),
-        (r"rejected|fetch first|non-fast-forward", "GitHub changed during the sync. Sync again."),
+         f"{HOST} has files that would overwrite files in the vault that aren't synced (such as .obsidian)."),
+        (r"rejected|fetch first|non-fast-forward", f"{HOST} changed during the sync. Sync again."),
         (r"timed out", "A git command took too long and was stopped."),
     ]
     for pattern, message in checks:
@@ -423,7 +449,7 @@ class Sync:
         git = self.git
 
         # 1. Can GitHub be reached, and what is on it?
-        self.step("Contacting GitHub")
+        self.step(f"Contacting {HOST}")
         head, branches = self.remote_refs()
         branch = head or "main"
 
@@ -463,7 +489,7 @@ class Sync:
         for attempt in (1, 2):
             tip = ""
             if branch in branches:
-                self.step("Getting changes from GitHub")
+                self.step(f"Getting changes from {HOST}")
                 git.ok("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
                        timeout=NETWORK)
                 tip = git.maybe("rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}^{{commit}}")
@@ -479,7 +505,7 @@ class Sync:
             parents = ["-p", tip] if tip else []
             pushed = git.text("commit-tree", tree, *parents, "-m",
                               f"Sync {self.folder} " + time.strftime("%Y-%m-%d %H:%M", self.when))
-            self.step("Sending to GitHub")
+            self.step(f"Sending to {HOST}")
             code, _, err = git.run("push", "-q", "origin", f"{pushed}:refs/heads/{branch}", timeout=NETWORK)
             if code == 0:
                 break
@@ -536,7 +562,7 @@ class Sync:
             elif n >= WARN_BYTES:
                 self.warnings.append(path)
         if too_big:
-            raise Failure("Too large for GitHub (over 100 MB): " + ", ".join(too_big[:3]) +
+            raise Failure(f"Too large for {HOST} (over 100 MB): " + ", ".join(too_big[:3]) +
                           (" and more" if len(too_big) > 3 else ""))
 
     def filter_tree(self, tree):
@@ -580,11 +606,11 @@ class Sync:
         # write the filtered tree.
         filtered = self.filter_tree(theirs)
         commit = git.text("commit-tree", filtered, *(["-p", base] if base else []),
-                          "-m", f"Sync: {self.folder} on GitHub")
+                          "-m", f"Sync: {self.folder} on {HOST}")
         self.step("Merging")
         self.merging = self.merged = True
         code, _, err = git.run("merge", "-q", "--no-edit", "--allow-unrelated-histories",
-                               "-m", "Sync: merge changes from GitHub", commit)
+                               "-m", f"Sync: merge changes from {HOST}", commit)
         if code != 0:
             conflicted = git.paths("diff", "--name-only", "-z", "--diff-filter=U")
             if not conflicted:
@@ -728,6 +754,8 @@ def main(argv):
     url = "" if argv[2] == "-" and op == "status" else repo_url(argv[2])
     if not url and not (argv[2] == "-" and op == "status"):
         return 2
+    global HOST
+    HOST = host_name(url) if url else "GitHub"
     vaults = []
     for v in argv[4:]:
         p = vault_path(v)

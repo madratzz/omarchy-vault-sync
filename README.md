@@ -99,6 +99,25 @@ You can edit it by hand; Vault Sync picks up the change.
 If the repository is public, the popup says so: anyone on the internet can read
 every note you sync.
 
+## Forgejo, Gitea and Codeberg
+
+Any https repository URL works, not just GitHub: paste
+`https://codeberg.org/you/notes` or `https://git.example.com:3000/you/notes`
+the same way. The public-repo warning asks the server's `/api/v1` API, and the
+popup and messages name the host instead of GitHub.
+
+`gh` only logs git in to GitHub. For another host, create an access token
+(Settings → Applications on Forgejo) with repository read and write access,
+and store it in a git credential helper, for example:
+
+```bash
+git config --global credential.https://git.example.com.helper libsecret   # or: store
+printf 'protocol=https\nhost=git.example.com\nusername=you\npassword=<token>\n' | git credential approve
+```
+
+Vault Sync never prompts, so the login must already work with
+`git ls-remote https://git.example.com/you/notes.git`.
+
 ## What a sync does
 
 One repository can hold any number of vaults. Each vault gets its own folder:

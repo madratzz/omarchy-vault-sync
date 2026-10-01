@@ -34,7 +34,8 @@ class EngineTest(unittest.TestCase):
         subprocess.run(["/usr/bin/git", "init", "-q", "--bare", "-b", "main", self.remote], check=True)
         with open(os.path.join(self.home, ".gitconfig"), "w") as f:
             f.write("[user]\n\tname = Test\n\temail = t@example.com\n"
-                    f'[url "file://{self.remote}"]\n\tinsteadOf = https://github.com/test/vault.git\n')
+                    f'[url "file://{self.remote}"]\n\tinsteadOf = https://github.com/test/vault.git\n'
+                    f'\tinsteadOf = https://git.example.com:3000/test/vault.git\n')
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -250,6 +251,15 @@ class EngineTest(unittest.TestCase):
                                 capture_output=True).returncode
             self.assertEqual(rc, 2, args)
 
+    def test_syncs_with_a_forgejo_url(self):
+        url = "https://git.example.com:3000/test/vault"
+        alpha = self.vault("Alpha", {"note.md": "hi"})
+        events = self.engine("sync", alpha, url=url)
+        self.assertIn({"event": "step", "vault": alpha, "text": "Contacting git.example.com:3000"}, events)
+        self.assertEqual(events[-1]["event"], "done", events)
+        self.assertEqual(self.remote_files(), ["Vaults/Alpha/note.md"])
+        self.assertEqual(self.result("status", alpha, url=url)["unpushed"], 0)
+
     def test_names(self):
         when = time.strptime("2026-09-23 14:05", "%Y-%m-%d %H:%M")
         self.assertEqual(engine.conflict_name("a/b/note.v2.md", when, 1), "a/b/note.v2 (conflict 2026-09-23 1405).md")
@@ -257,6 +267,11 @@ class EngineTest(unittest.TestCase):
         self.assertTrue(engine.is_conflict_copy("x/todo (conflict 2026-09-23 1405 2).md"))
         self.assertFalse(engine.is_conflict_copy("my (conflict notes).md"))
         self.assertEqual(engine.sync_refs("https://github.com/chyld/.github.git"), "refs/vault-sync/chyld/_.github")
+        self.assertEqual(engine.sync_refs("https://git.example.com:3000/a.b/notes.git"),
+                         "refs/vault-sync/git.example.com_3000/a.b/notes")
+        self.assertEqual(engine.repo_url("https://Codeberg.org/you/notes/"), "https://codeberg.org/you/notes.git")
+        for bad in ["https://git.example.com:0/a/b", "https://example/a/b", "https://u@codeberg.org/a/b"]:
+            self.assertEqual(engine.repo_url(bad), "", bad)
         self.assertEqual(engine.vault_folder("/home/u/My Notes"), "Vaults/My Notes")
         self.assertEqual(engine.vault_folder("/home/u/.hidden"), "")
         for bad in ["", "/etc/passwd", "../x", "a//b", ".git/config", "a\nb"]:

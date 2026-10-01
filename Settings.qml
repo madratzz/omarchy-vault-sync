@@ -58,7 +58,7 @@ Panel {
 
   // ------------------------------------------------------------ repository
 
-  // Saves the URL typed in the field when it is a valid GitHub URL, or
+  // Saves the URL typed in the field when it is a valid repository URL, or
   // clears it when the field is empty. `tidy` also rewrites the field in
   // its normal form, which is left for when typing has finished.
   function commitUrl(tidy) {
@@ -369,7 +369,8 @@ Panel {
             id: repoGlyph
             anchors.verticalCenter: parent.verticalCenter
             textFormat: Text.PlainText
-            text: "\u{f02a4}"   // nf-md-github
+            // nf-md-github on GitHub, else nf-md-git
+            text: root.service && root.service.repoUrl !== "" && !Safe.isGitHub(root.service.repoUrl) ? "\u{f02a2}" : "\u{f02a4}"
             color: root.barForeground
             font.family: Style.font.family
             font.pixelSize: Style.font.body + 2
@@ -393,7 +394,7 @@ Panel {
 
         Caption {
           visible: urlField.invalid
-          text: "Use a URL like https://github.com/you/notes"
+          text: "Use a URL like https://github.com/you/notes or https://codeberg.org/you/notes"
           color: Util.alpha(Color.urgent, 0.9)
         }
 
@@ -546,8 +547,8 @@ Panel {
 
           Button {
             id: githubButton
-            iconText: "\u{f02a4}"
-            tooltipText: "Open on GitHub"
+            iconText: repoGlyph.text
+            tooltipText: root.service && root.service.repoUrl !== "" ? "Open on " + Safe.hostName(root.service.repoUrl) : "Open repository"
             bordered: true
             enabled: root.service !== null && root.service.repoUrl !== ""
             opacity: enabled ? 1 : 0.5

@@ -17,26 +17,58 @@ var CONTROL = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\
 
 // ------------------------------------------------------------ repositories
 
-// A GitHub repository URL, normalized to "https://github.com/<owner>/<repo>.git",
-// or "" when it is not one. Only https github.com URLs are accepted: git then
-// signs in through the user's own credential helper, never a prompt.
+// A repository URL on GitHub or a Forgejo/Gitea server, normalized to
+// "https://<host>/<owner>/<repo>.git", or "" when it is not one. Only https
+// URLs are accepted: git then signs in through the user's own credential
+// helper, never a prompt. The host is lowercased; a port is kept.
+var REPO_URL = /^https:\/\/((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}|localhost)(?::([0-9]{1,5}))?\/([A-Za-z0-9](?:[A-Za-z0-9._-]{0,38}))\/([A-Za-z0-9._-]{1,100}?)(?:\.git)?\/?$/
+
 function repoUrl(value) {
   if (typeof value !== "string") return ""
-  var m = /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/([A-Za-z0-9._-]{1,100}?)(?:\.git)?\/?$/.exec(value.trim())
-  if (!m || m[2] === "." || m[2] === "..") return ""
-  return "https://github.com/" + m[1] + "/" + m[2] + ".git"
+  var m = REPO_URL.exec(value.trim())
+  if (!m || m[4] === "." || m[4] === "..") return ""
+  if (m[2] !== undefined && !(+m[2] >= 1 && +m[2] <= 65535)) return ""
+  var host = m[1].toLowerCase() + (m[2] !== undefined ? ":" + (+m[2]) : "")
+  return "https://" + host + "/" + m[3] + "/" + m[4] + ".git"
+}
+
+// "<host>" (with any port) for a URL that passed repoUrl(), else "".
+function repoHost(value) {
+  var url = repoUrl(value)
+  return url ? url.slice("https://".length, url.indexOf("/", "https://".length)) : ""
+}
+
+// Whether the repository is on github.com.
+function isGitHub(value) {
+  return repoHost(value) === "github.com"
+}
+
+// The host's name for display: "GitHub", else the host itself.
+function hostName(value) {
+  var host = repoHost(value)
+  return host === "github.com" ? "GitHub" : host
 }
 
 // "<owner>/<repo>" for a URL that passed repoUrl(), else "".
 function repoSlug(value) {
   var url = repoUrl(value)
-  return url ? url.slice("https://github.com/".length, -".git".length) : ""
+  return url ? url.slice(("https://" + repoHost(url) + "/").length, -".git".length) : ""
 }
 
-// The repository's page on GitHub, else "".
+// The repository's web page, else "".
 function repoPage(value) {
   var slug = repoSlug(value)
-  return slug ? "https://github.com/" + slug : ""
+  return slug ? "https://" + repoHost(value) + "/" + slug : ""
+}
+
+// The API address that answers 200 without a login only for a public
+// repository: GitHub's, else Forgejo/Gitea's /api/v1. "" when invalid.
+function repoApi(value) {
+  var slug = repoSlug(value)
+  if (!slug) return ""
+  var host = repoHost(value)
+  return host === "github.com" ? "https://api.github.com/repos/" + slug
+                               : "https://" + host + "/api/v1/repos/" + slug
 }
 
 // ------------------------------------------------------------ vaults
@@ -165,8 +197,8 @@ function cleanTime(value) {
 
 // ~/.config/vault-sync/repos.json: the repository in use, which vaults sync
 // to each repository, and when each last synced.
-//   { "version": 1, "current": "https://github.com/<owner>/<repo>",
-//     "repos": { "https://github.com/<owner>/<repo>": {
+//   { "version": 1, "current": "https://<host>/<owner>/<repo>",
+//     "repos": { "https://<host>/<owner>/<repo>": {
 //       "vaults": [paths], "lastSync": time, "lastSummary": "\u21912 \u21931",
 //       "synced": { path: time } } } }
 // Read defensively: an unreadable file is an empty one, and an unreadable

@@ -48,17 +48,17 @@ function sync(script, url, vaults) {
   return repo ? [PYTHON, "-I", "-S", script, "sync", repo, "--"].concat(vaults) : null
 }
 
-// ------------------------------------------------------------ GitHub
+// ------------------------------------------------------------ visibility
 
-// Whether a repository is public: GitHub answers 200 without a login only
-// for a public repository, and 404 for a private or missing one. No
-// credentials, no redirects, nothing read but the status code.
+// Whether a repository is public: GitHub and Forgejo/Gitea answer 200
+// without a login only for a public repository, and 404 for a private or
+// missing one. No credentials, no redirects, nothing read but the status code.
 function visibility(url) {
-  var slug = Safe.repoSlug(url)
-  return slug ? [CURL, "-q", "-sS", "--proto", "=https", "--max-time", "10", "--max-filesize", "1048576",
-                 "--noproxy", "*", "-o", "/dev/null", "-w", "%{http_code}",
-                 "-H", "Accept: application/vnd.github+json",
-                 "--", "https://api.github.com/repos/" + slug] : null
+  var api = Safe.repoApi(url)
+  return api ? [CURL, "-q", "-sS", "--proto", "=https", "--max-time", "10", "--max-filesize", "1048576",
+                "--noproxy", "*", "-o", "/dev/null", "-w", "%{http_code}",
+                "-H", "Accept: application/json",
+                "--", api] : null
 }
 
 // ------------------------------------------------------------ Omarchy
@@ -71,7 +71,7 @@ function omarchyBin(root) {
   return s + "/bin"
 }
 
-// Open on GitHub: the repository's page, a validated https github.com URL.
+// Open the repository's page, a validated https URL.
 function openUrl(root, url) {
   var page = Safe.repoPage(url)
   return page ? [omarchyBin(root) + "/omarchy-launch-browser", page] : null

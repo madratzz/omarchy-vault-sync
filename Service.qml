@@ -4,7 +4,7 @@ import Quickshell.Io
 import "Safe.js" as Safe
 import "Commands.js" as Commands
 
-// Vault Sync: Obsidian vaults kept in step with a GitHub repository, each
+// Vault Sync: Obsidian vaults kept in step with a GitHub or Forgejo repository, each
 // vault in its own Vaults/<name>/ folder.
 //
 // This service holds the state and drives two helpers; the popup
@@ -304,7 +304,7 @@ Item {
 
   Runner { id: probe }
 
-  // Asks GitHub, without logging in, whether the repository is public. Once
+  // Asks the host, without logging in, whether the repository is public. Once
   // per repository per session, unless the answer didn't come back.
   function checkVisibility() {
     var url = sync.repoUrl
