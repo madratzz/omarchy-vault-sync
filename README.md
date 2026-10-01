@@ -17,6 +17,12 @@
   <img src="preview.png" alt="Vault Sync: the popup with a GitHub repository at the top and a tree of Obsidian vaults under it, next to the repository's Vaults folder" width="900">
 </p>
 
+> **This is a fork** of [chyld/omarchy-vault-sync](https://github.com/chyld/omarchy-vault-sync)
+> that adds **Forgejo / Gitea / Codeberg** support and a **"Vault is the whole
+> repository"** mode for vaults kept as a plain git clone (with Git LFS). See
+> [FORK.md](FORK.md) for what changed, why, Forgejo sign-in and recovering a
+> vault that got nested.
+
 ---
 
 **Your notes live in Obsidian. Your backups shouldn't live in your head.** Did
@@ -44,11 +50,15 @@ your accent color once they're safe.
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/chyld/omarchy-vault-sync --enable
+omarchy plugin add https://github.com/madratzz/omarchy-vault-sync --enable
+omarchy restart shell
 ```
 
-Requirements: Omarchy 4 (omarchy-shell), `git`, and a GitHub login git can
-use. The simplest is `gh auth login` followed by `gh auth setup-git`.
+Requirements: Omarchy 4 (omarchy-shell), `git`, and a login git can use
+without prompting. On GitHub the simplest is `gh auth login` followed by
+`gh auth setup-git`; on Forgejo, an access token in a credential helper (see
+[below](#forgejo-gitea-and-codeberg)). Repositories that use Git LFS need
+`git-lfs`.
 
 ## Set up
 
@@ -201,10 +211,14 @@ Middle-click the icon to sync without opening the popup.
 - **Network:**
   - When you press Sync now: `git ls-remote`, `fetch` and `push` to the
     repository you entered, and nowhere else.
-  - One anonymous request to `api.github.com/repos/<owner>/<repo>` per
+  - One anonymous request to `api.github.com/repos/<owner>/<repo>` (on other
+    hosts, `https://<host>/api/v1/repos/<owner>/<repo>`) per
     repository URL per session (when the shell starts and when you enter a
     URL; opening the popup asks again only if the last answer didn't come
-    back), to warn you if the repository is public. It sends no credentials,
+    back), to warn you if the repository is public.
+  - In "Vault is the whole repository" mode, `git lfs push` to the same
+    repository when it uses Git LFS, and LFS downloads when a merge checks
+    out LFS files. It sends no credentials,
     follows no redirects and reads nothing but the status code.
 - **Credentials:** git signs in with the credential helper already in your git
   config (for example `gh auth setup-git`). The token passes between git and
@@ -216,7 +230,8 @@ Middle-click the icon to sync without opening the popup.
     0700 directory, through an exclusively created temporary that is renamed
     into place.
   - Inside each ticked vault, only when you press Sync now: its `.git` folder
-    (including two refs per repository under `refs/vault-sync/<owner>/<repo>/`
+    (including two refs per repository under `refs/vault-sync/<owner>/<repo>/`,
+    or `refs/vault-sync/<host>/<owner>/<repo>/` on hosts other than GitHub,
     and a separate index file, `.git/vault-sync-index`, used to build the
     repository's tree), and the conflict copies described above, each created
     as a new file (never replacing one) without following a symlink.
@@ -239,12 +254,16 @@ Middle-click the icon to sync without opening the popup.
 
   These three run with a fixed `PATH` and no inherited environment, under
   `/usr/bin/timeout`, so a deadline stops each one and everything it started.
-  The one exception is **Open on GitHub**, which starts Omarchy's
+  The one exception is **Open on GitHub** (or on your host), which starts Omarchy's
   `omarchy-launch-browser` with your repository's page (a checked
-  `https://github.com/<owner>/<repo>` URL), detached and with the shell's
+  `https://<host>/<owner>/<repo>` URL), detached and with the shell's
   normal environment, since a browser needs your display.
 - **git in your vaults** never runs hooks or an fsmonitor, and a symlink that
   arrives from GitHub is checked out as a plain file, never as a link.
+- **"Vault is the whole repository" mode** commits and merges everything git
+  doesn't ignore, so `.obsidian` (including plugin code) and `.trash` arrive
+  from the repository just as with `git pull`. Use it only with a repository
+  you control. Details in [FORK.md](FORK.md#security-trade-off).
 - **Limits:** a file over 100 MB stops a sync before anything is committed
   (GitHub would refuse it), and each git command has a deadline. git itself
   has no size limit on what `fetch` downloads, so a very large push from
