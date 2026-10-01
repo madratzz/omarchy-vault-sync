@@ -200,14 +200,16 @@ function cleanTime(value) {
 //   { "version": 1, "current": "https://<host>/<owner>/<repo>",
 //     "repos": { "https://<host>/<owner>/<repo>": {
 //       "vaults": [paths], "lastSync": time, "lastSummary": "\u21912 \u21931",
-//       "synced": { path: time } } } }
+//       "synced": { path: time }, "root": true } } }
+// "root" marks a repository that is one vault at its top level, rather than
+// one Vaults/<name>/ folder per vault.
 // Read defensively: an unreadable file is an empty one, and an unreadable
 // field is left out.
 
 function repoEntry(raw) {
   var entry = { vaults: cleanSelection(raw.vaults), lastSync: cleanTime(raw.lastSync),
                 lastSummary: typeof raw.lastSummary === "string" ? plain(raw.lastSummary, 40) : "",
-                synced: Object.create(null) }
+                synced: Object.create(null), root: raw.root === true }
   var synced = raw.synced
   if (synced && typeof synced === "object" && !Array.isArray(synced)) {
     var n = 0
@@ -255,6 +257,12 @@ function selectionFor(config, url) {
   return entry ? entry.vaults : []
 }
 
+// Whether a repository is one vault at its top level.
+function rootFor(config, url) {
+  var entry = entryFor(config, url)
+  return entry ? entry.root : false
+}
+
 // When Sync now last finished for a repository, and what it moved.
 function lastSyncFor(config, url) {
   var entry = entryFor(config, url)
@@ -272,7 +280,7 @@ function vaultSyncedFor(config, url, path) {
 }
 
 // The file's text after `change` to `url`'s entry (any of vaults, lastSync,
-// lastSummary, synced, merged per vault) and, when `current` is a string,
+// lastSummary, root, synced, merged per vault) and, when `current` is a string,
 // with the repository in use set to it ("" for none).
 function repoConfigText(config, url, change, current) {
   var repos = {}
@@ -285,15 +293,18 @@ function repoConfigText(config, url, change, current) {
     var entry = { vaults: old.vaults }
     if (old.lastSync) entry.lastSync = old.lastSync
     if (old.lastSummary) entry.lastSummary = old.lastSummary
+    var root = old.root === true
     var synced = {}
     for (var p in old.synced) synced[p] = old.synced[p]
     if (pages[i] === page && change) {
       if (change.vaults) entry.vaults = cleanSelection(change.vaults)
       if (change.lastSync) entry.lastSync = isoTime(change.lastSync)
       if (change.lastSummary !== undefined) entry.lastSummary = plain(change.lastSummary, 40)
+      if (change.root !== undefined) root = change.root === true
       if (change.synced) for (var q in change.synced) if (vaultPath(q)) synced[q] = isoTime(change.synced[q])
     }
     if (Object.keys(synced).length > 0) entry.synced = synced
+    if (root) entry.root = true
     repos[pages[i]] = entry
   }
   var out = { version: 1 }

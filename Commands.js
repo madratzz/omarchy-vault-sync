@@ -38,14 +38,18 @@ function writeRepos(script) { return [PYTHON, "-I", "-S", script, "write", "repo
 
 // The local state of `vaults`, against `url` (or no repository), as JSON
 // lines. Read-only: nothing is changed and nothing leaves the machine.
-function status(script, url, vaults) {
-  return [PYTHON, "-I", "-S", script, "status", Safe.repoUrl(url) || "-", "--"].concat(vaults)
+// `root`: the repository is one vault at its top level.
+function status(script, url, vaults, root) {
+  var repo = Safe.repoUrl(url)
+  return [PYTHON, "-I", "-S", script, "status", repo || "-"].concat(repo && root === true ? ["--root"] : [], ["--"], vaults)
 }
 
-// Sync `vaults` with `url`, as JSON lines. Null without a valid URL.
-function sync(script, url, vaults) {
+// Sync `vaults` with `url`, as JSON lines. Null without a valid URL, or
+// with more than one vault at the root.
+function sync(script, url, vaults, root) {
   var repo = Safe.repoUrl(url)
-  return repo ? [PYTHON, "-I", "-S", script, "sync", repo, "--"].concat(vaults) : null
+  if (!repo || (root === true && vaults.length !== 1)) return null
+  return [PYTHON, "-I", "-S", script, "sync", repo].concat(root === true ? ["--root"] : [], ["--"], vaults)
 }
 
 // ------------------------------------------------------------ visibility

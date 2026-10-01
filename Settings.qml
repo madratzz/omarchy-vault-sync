@@ -122,6 +122,7 @@ Panel {
     var s = root.service
     if (!s) return { text: "", color: root.barForeground }
     if (s.selected.indexOf(path) === -1) {
+      if (s.root) return { text: "not synced", color: Util.alpha(root.barForeground, 0.6) }
       var folder = Safe.vaultFolder(path)
       if (!folder) return { text: "can't sync this name", color: Util.alpha(root.barForeground, 0.6) }
       for (var i = 0; i < s.selected.length; i++)
@@ -406,6 +407,47 @@ Panel {
           font.bold: true
         }
 
+        // A repository that is one vault, notes at its top level, instead
+        // of one Vaults/<name>/ folder per vault.
+        Item {
+          id: rootRow
+          readonly property bool checked: root.service !== null && root.service.root
+          width: parent.width
+          height: Style.space(24)
+          visible: root.service !== null && root.service.repoUrl !== ""
+
+          Text {
+            id: rootGlyph
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: rootRow.checked ? "\u{f0132}" : "\u{f0131}"   // nf-md-checkbox_marked / _blank_outline
+            color: rootRow.checked ? Color.accent : Util.alpha(root.barForeground, 0.7)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body + 2
+          }
+
+          Text {
+            anchors.left: rootGlyph.right
+            anchors.leftMargin: Style.space(8)
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            text: "Vault is the whole repository"
+            color: Util.alpha(root.barForeground, rootRow.checked ? 1 : 0.8)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+          }
+
+          MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            enabled: root.service !== null && !root.service.syncing
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.service.setRoot(!rootRow.checked)
+          }
+        }
+
         // ---------------------------------------------------------- vault tree
 
         // The vaults under the repository: ticked ones sync to it, each into
@@ -558,7 +600,9 @@ Panel {
         }
 
         Caption {
-          text: "Syncs to Vaults/<name>/ \u00b7 .obsidian stays local"
+          text: root.service && root.service.root
+            ? "Syncs the vault's own branch \u00b7 everything git doesn't ignore, .obsidian too"
+            : "Syncs to Vaults/<name>/ \u00b7 .obsidian stays local"
           color: Util.alpha(root.barForeground, 0.75)
         }
 

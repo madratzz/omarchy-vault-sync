@@ -5,7 +5,8 @@ import "Safe.js" as Safe
 import "Commands.js" as Commands
 
 // Vault Sync: Obsidian vaults kept in step with a GitHub or Forgejo repository, each
-// vault in its own Vaults/<name>/ folder.
+// vault in its own Vaults/<name>/ folder, or one vault as the whole
+// repository ("root").
 //
 // This service holds the state and drives two helpers; the popup
 // (Settings.qml) only shows it and calls start(), setRepoUrl() and
@@ -172,6 +173,18 @@ Item {
     sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, "", null, page))
   }
 
+  // Whether the repository in use is one vault at its top level.
+  readonly property bool root: Safe.rootFor(sync.repoConfig, sync.repoUrl)
+
+  // At the root a repository holds one vault: turning it on keeps the
+  // first ticked one.
+  function setRoot(on) {
+    if (!sync.repoUrl || sync.syncing) return
+    var change = { root: on === true }
+    if (on === true && sync.selected.length > 1) change.vaults = sync.selected.slice(0, 1)
+    sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, sync.repoUrl, change))
+  }
+
   // The vaults ticked for the repository in use.
   readonly property var selected: Safe.selectionFor(sync.repoConfig, sync.repoUrl)
   readonly property bool configured: sync.repoUrl !== "" && sync.selected.length > 0
@@ -180,7 +193,8 @@ Item {
     if (!sync.repoUrl || sync.syncing || !Safe.vaultPath(path)) return
     var list = sync.selected.slice()
     var i = list.indexOf(path)
-    if (i === -1) list.push(path)
+    if (i === -1 && sync.root) list = [path]   // one vault at the root
+    else if (i === -1) list.push(path)
     else list.splice(i, 1)
     sync.writeRepoConfig(Safe.repoConfigText(sync.repoConfig, sync.repoUrl, { vaults: list }))
   }
@@ -194,6 +208,7 @@ Item {
   }
 
   onSelectedChanged: sync.refresh()
+  onRootChanged: { sync.states = ({}); sync.refresh() }
   // Another repository has its own sync history: forget what was shown for
   // the old one at once, then read it again for the new one.
   onRepoUrlChanged: { sync.states = ({}); sync.warnings = []; sync.checkVisibility(); sync.refresh() }
@@ -274,7 +289,7 @@ Item {
     if (vaults.length === 0) return
     if (local.running) { sync.refreshAgain = true; return }
     var url = sync.repoUrl
-    local.run(Commands.status(sync.engineScript, url, vaults), 300000, function() {
+    local.run(Commands.status(sync.engineScript, url, vaults, sync.root), 300000, function() {
       if (sync.refreshAgain) { sync.refreshAgain = false; Qt.callLater(sync.refresh) }
     }, null, function(line) {
       var e = Safe.engineEvent(line, vaults)
@@ -343,7 +358,7 @@ Item {
   // doesn't stop the others; each keeps its own error until its next sync.
   function start() {
     var vaults = sync.selected.slice()
-    var argv = Commands.sync(sync.engineScript, sync.repoUrl, vaults)
+    var argv = Commands.sync(sync.engineScript, sync.repoUrl, vaults, sync.root)
     if (sync.syncing || runner.running || !sync.configured || !argv || !sync.engineScript) return
     sync.syncing = true
     sync.activity = []

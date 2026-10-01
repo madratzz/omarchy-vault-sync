@@ -205,6 +205,12 @@ test("the engine and helpers run from the system Python in isolated mode", () =>
                    ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "sync", "https://github.com/chyld/notes.git", "--", "/v/A", "/v/B"])
   assert.equal(Commands.sync("/p/engine.py", "http://evil.example/x", ["/v/A"]), null)
   assert.deepEqual([...Commands.readFile("/p/files.py", "repos")], ["/usr/bin/python3", "-I", "-S", "/p/files.py", "read", "repos"])
+  assert.deepEqual([...Commands.sync("/p/engine.py", "https://codeberg.org/you/notes", ["/v/A"], true)],
+                   ["/usr/bin/python3", "-I", "-S", "/p/engine.py", "sync", "https://codeberg.org/you/notes.git", "--root", "--", "/v/A"])
+  assert.equal(Commands.sync("/p/engine.py", "https://codeberg.org/you/notes", ["/v/A", "/v/B"], true), null)
+  assert.deepEqual([...Commands.status("/p/engine.py", "https://codeberg.org/you/notes", ["/v/A"], true)].slice(5, 7),
+                   ["https://codeberg.org/you/notes.git", "--root"])
+  assert.deepEqual([...Commands.status("/p/engine.py", "", ["/v/A"], true)].slice(5, 7), ["-", "--"])
   const curl = [...Commands.visibility("https://github.com/chyld/notes")]
   assert.equal(curl[1], "-q")
   assert.ok(!curl.includes("-L"))
@@ -214,4 +220,16 @@ test("the engine and helpers run from the system Python in isolated mode", () =>
   assert.equal(Commands.visibility("https://codeberg.org/you"), null)
   assert.deepEqual([...Commands.openUrl("/usr/share/omarchy", "https://github.com/chyld/notes.git")],
                    ["/usr/share/omarchy/bin/omarchy-launch-browser", "https://github.com/chyld/notes"])
+})
+
+test("root is kept per repository", () => {
+  let config = Safe.repoConfig("")
+  assert.equal(Safe.rootFor(config, "https://codeberg.org/you/notes"), false)
+  config = Safe.repoConfig(Safe.repoConfigText(config, "https://codeberg.org/you/notes", { vaults: ["/v/A"], root: true }))
+  assert.equal(Safe.rootFor(config, "https://codeberg.org/you/notes.git"), true)
+  config = Safe.repoConfig(Safe.repoConfigText(config, "https://codeberg.org/you/notes", { lastSummary: "x" }))
+  assert.equal(Safe.rootFor(config, "https://codeberg.org/you/notes"), true)
+  const text = Safe.repoConfigText(config, "https://codeberg.org/you/notes", { root: false })
+  assert.equal(JSON.parse(text).repos["https://codeberg.org/you/notes"].root, undefined)
+  assert.equal(Safe.rootFor(Safe.repoConfig('{"repos":{"https://codeberg.org/a/b":{"vaults":[],"root":"yes"}}}'), "https://codeberg.org/a/b"), false)
 })

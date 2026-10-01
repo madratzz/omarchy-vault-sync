@@ -10,6 +10,7 @@ sys.dont_write_bytecode = True   # no __pycache__ in the plugin tree
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -50,17 +51,17 @@ class EngineTest(unittest.TestCase):
                 f.write(text)
         return path
 
-    def engine(self, op, *vaults, url=URL):
+    def engine(self, op, *vaults, url=URL, root=False):
         env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
-        out = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, op, url, "--", *vaults],
+        out = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, op, url, *(["--root"] if root else []), "--", *vaults],
                              env=env, capture_output=True, timeout=120)
         self.assertEqual(out.returncode, 0, out.stderr.decode())
         events = [json.loads(line) for line in out.stdout.decode().splitlines()]
         self.assertEqual(events[-1], {"event": "end"})
         return events[:-1]
 
-    def result(self, op, vault, url=URL):
-        events = [e for e in self.engine(op, vault, url=url) if e["event"] != "step"]
+    def result(self, op, vault, url=URL, root=False):
+        events = [e for e in self.engine(op, vault, url=url, root=root) if e["event"] != "step"]
         self.assertEqual(len(events), 1, events)
         return events[0]
 
@@ -75,7 +76,7 @@ class EngineTest(unittest.TestCase):
 
     def push_remote_files(self, files):
         """Publish through plain git so the engine cannot filter the fixture."""
-        checkout = os.path.join(self.root, "contributor")
+        checkout = os.path.join(tempfile.mkdtemp(prefix="contributor", dir=self.root), "c")
         env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
         subprocess.run(["/usr/bin/git", "clone", "-q", self.remote, checkout],
                        env=env, check=True, capture_output=True)
@@ -89,6 +90,20 @@ class EngineTest(unittest.TestCase):
                            env=env, check=True, capture_output=True)
         for rel in files:
             self.assertIn(rel, self.remote_files())
+
+    def git(self, cwd, *args):
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        return subprocess.run(["/usr/bin/git", "-C", cwd, *args], env=env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    def clone_vault(self, name, files):
+        """A vault that is a clone of the repository, its notes at the top
+        level, as a vault kept with plain git is."""
+        self.push_remote_files(files)
+        path = os.path.join(self.root, name)
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        subprocess.run(["/usr/bin/git", "clone", "-q", URL + ".git", path], env=env, check=True, capture_output=True)
+        return path
 
     def read(self, vault, rel):
         with open(os.path.join(vault, rel)) as f:
@@ -276,6 +291,83 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(engine.vault_folder("/home/u/.hidden"), "")
         for bad in ["", "/etc/passwd", "../x", "a//b", ".git/config", "a\nb"]:
             self.assertEqual(engine.rel_path(bad), "", bad)
+
+    # ------------------------------------------------------------ root
+
+    def test_root_syncs_the_vaults_own_branch(self):
+        vault = self.clone_vault("Notes", {"Home.md": "home\n", ".obsidian/app.json": "{}"})
+        self.push_remote_files({"Inbox/remote.md": "from elsewhere\n"})
+        with open(os.path.join(vault, "Inbox.md"), "w") as f:
+            f.write("mine\n")
+        with open(os.path.join(vault, ".obsidian", "app.json"), "w") as f:
+            f.write('{"x": 1}')
+        done = self.result("sync", vault, root=True)
+        self.assertEqual(done["event"], "done", done)
+        self.assertEqual((done["sent"], done["received"]), (2, 1))
+        self.assertEqual(self.read(vault, "Inbox/remote.md"), "from elsewhere\n")
+        # The vault's branch is the remote branch: no Vaults/ copy, .obsidian kept.
+        self.assertEqual(self.remote_git("rev-parse", "main"), self.git(vault, "rev-parse", "HEAD"))
+        self.assertEqual(self.remote_files(), [".obsidian/app.json", "Home.md", "Inbox.md", "Inbox/remote.md"])
+        status = self.result("status", vault, root=True)
+        self.assertEqual((status["changes"], status["unpushed"]), (0, 0))
+        again = self.result("sync", vault, root=True)
+        self.assertEqual((again["sent"], again["received"]), (0, 0))
+
+    def test_root_keeps_both_versions_of_a_conflict(self):
+        vault = self.clone_vault("Notes", {"todo.md": "base\n"})
+        self.push_remote_files({"todo.md": "theirs\n"})
+        with open(os.path.join(vault, "todo.md"), "w") as f:
+            f.write("mine\n")
+        done = self.result("sync", vault, root=True)
+        self.assertEqual(done["conflicts"], ["todo.md"])
+        copy = [n for n in os.listdir(vault) if n.startswith("todo (conflict ")]
+        self.assertEqual(len(copy), 1)
+        self.assertEqual((self.read(vault, "todo.md"), self.read(vault, copy[0])), ("theirs\n", "mine\n"))
+        self.assertEqual(self.remote_git("rev-parse", "main"), self.git(vault, "rev-parse", "HEAD"))
+
+    def test_root_refuses_unrelated_histories(self):
+        self.push_remote_files({"other.md": "x"})
+        vault = self.vault("Notes", {"a.md": "1"})
+        done = self.result("sync", vault, root=True)
+        self.assertEqual(done["event"], "error")
+        self.assertIn("no history in common", done["message"])
+        self.assertEqual(self.remote_files(), ["other.md"])
+
+    def test_root_starts_an_empty_repository(self):
+        vault = self.vault("Notes", {"a.md": "1"})
+        done = self.result("sync", vault, root=True)
+        self.assertEqual(done["event"], "done", done)
+        self.assertEqual(self.remote_files(), ["a.md"])
+
+    def test_folders_refuse_a_clone_of_a_root_repository(self):
+        vault = self.clone_vault("Notes", {"Home.md": "home\n"})
+        with open(os.path.join(vault, "new.md"), "w") as f:
+            f.write("x")
+        done = self.result("sync", vault)
+        self.assertEqual(done["event"], "error")
+        self.assertIn("whole repository", done["message"])
+        self.assertEqual(self.remote_files(), ["Home.md"])
+
+    def test_root_takes_one_vault(self):
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        rc = subprocess.run(["/usr/bin/python3", "-I", "-S", ENGINE, "sync", URL, "--root", "--",
+                             self.vault("A"), self.vault("B")], env=env, capture_output=True).returncode
+        self.assertEqual(rc, 2)
+
+    @unittest.skipUnless(os.path.exists("/usr/bin/git-lfs"), "git-lfs is not installed")
+    def test_root_uploads_lfs_files(self):
+        env = {"HOME": self.home, "PATH": "/usr/bin:/bin"}
+        subprocess.run(["/usr/bin/git", "lfs", "install", "--skip-repo"], env=env, check=True, capture_output=True)
+        vault = self.clone_vault("Notes", {".gitattributes": "*.png filter=lfs diff=lfs merge=lfs -text\n"})
+        with open(os.path.join(vault, "pic.png"), "wb") as f:
+            f.write(b"\x89PNG not really" * 100)
+        done = self.result("sync", vault, root=True)
+        self.assertEqual(done["event"], "done", done)
+        pointer = self.remote_git("show", "main:pic.png")
+        self.assertTrue(pointer.startswith("version https://git-lfs"), pointer)
+        oid = re.search(r"oid sha256:([0-9a-f]{64})", pointer).group(1)
+        self.assertTrue(os.path.exists(os.path.join(self.remote, "lfs", "objects", oid[:2], oid[2:4], oid)),
+                        "the LFS object was not uploaded")
 
     # ------------------------------------------------------------ security
 

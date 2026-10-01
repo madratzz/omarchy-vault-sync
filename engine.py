@@ -3,8 +3,8 @@
 
 Run by the shell as an argv array, never through a shell:
 
-    /usr/bin/python3 -I -S engine.py status <repo-url or -> -- <vault>...
-    /usr/bin/python3 -I -S engine.py sync   <repo-url>      -- <vault>...
+    /usr/bin/python3 -I -S engine.py status <repo-url or -> [--root] -- <vault>...
+    /usr/bin/python3 -I -S engine.py sync   <repo-url>      [--root] -- <vault>...
 
 It prints one JSON object per line, and nothing else on stdout:
 
@@ -21,6 +21,11 @@ vault's folder in the repository (Vaults/<name>/), and pushes the result. A
 note changed on both sides keeps GitHub's version under its name, and this
 machine's version is written beside it as "note (conflict <time>).md". It
 never force-pushes and never resets.
+
+With --root the repository is one vault, at its top level: a sync commits
+everything git doesn't ignore (.obsidian included), merges the remote branch
+into the vault's own branch and pushes that branch, uploading Git LFS files
+first. Histories with nothing in common are never merged.
 
 Every git command runs in its own session under a deadline, and its output
 is read under a byte cap; overflow or the deadline stops the whole process
@@ -383,7 +388,7 @@ def create_beneath(vault, rel):
 
 # ------------------------------------------------------------ status
 
-def status(vault, url):
+def status(vault, url, root=False):
     """A vault's local state, without touching the network or changing it."""
     git = Git(vault)
     result = {"event": "status", "vault": vault, "isRepo": False, "changes": 0, "unpushed": 0,
@@ -392,14 +397,18 @@ def status(vault, url):
     if code != 0 or out.strip():
         return result                                # not the vault's own repository yet
     result["isRepo"] = True
-    out = git.ok("--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", *PATHSPEC)
+    out = git.ok("--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all",
+                 *(["--"] if root else PATHSPEC))
     result["changes"] = count_status(out)
     copies = [p for p in git.paths("ls-files", "-z", "--", ":(top,glob)**/*(conflict *") if is_conflict_copy(p)]
     result["conflictCopies"] = copies[:MAX_LISTED]
     result["conflictCount"] = len(copies)
     if url:
         refs = sync_refs(url)
-        n = git.maybe("rev-list", "--count", "--ignore-missing", "HEAD", "--not", refs + "/base")
+        # At the root, the vault's branch is pushed as it is: what origin
+        # doesn't have yet, however it was pushed, is unsent.
+        n = (git.maybe("rev-list", "--count", "HEAD", "--not", "--remotes=origin") if root else
+             git.maybe("rev-list", "--count", "--ignore-missing", "HEAD", "--not", refs + "/base"))
         result["unpushed"] = int(n) if n.isdigit() else 0
         t = git.maybe("log", "-1", "--format=%ct", "--ignore-missing", refs + "/pushed")
         result["lastPushed"] = int(t) if t.isdigit() else 0
@@ -427,9 +436,10 @@ def count_status(out):
 class Sync:
     """One vault synced with one repository."""
 
-    def __init__(self, vault, url, emit):
+    def __init__(self, vault, url, emit, root=False):
         self.vault = vault
         self.url = url
+        self.root = root
         self.refs = sync_refs(url)
         self.folder = vault_folder(vault)
         self.git = Git(vault)
@@ -444,6 +454,8 @@ class Sync:
         self.emit({"event": "step", "vault": self.vault, "text": text})
 
     def run(self):
+        if self.root:
+            return self.run_root()
         if not self.folder:
             raise Failure("Rename the vault folder to letters, digits, spaces, dots, dashes or underscores.")
         git = self.git
@@ -495,6 +507,13 @@ class Sync:
                 tip = git.maybe("rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}^{{commit}}")
                 if not tip:
                     raise Failure(f"Couldn't read the repository's {branch} branch.")
+                # The vault's history and the repository's never meet here:
+                # a vault that shares history with it is a clone of a
+                # repository with the notes at its root, and syncing it into
+                # Vaults/<name>/ would copy the whole repository into itself.
+                if before and git.run("merge-base", "HEAD", tip)[0] == 0:
+                    raise Failure("This vault is a clone of the repository with the notes at its root. "
+                                  "Tick \"Vault is the whole repository\" to sync it.")
                 self.merge_incoming(tip)
             if not git.maybe("rev-parse", "-q", "--verify", "HEAD"):
                 return self.done(tip, tip, before)   # an empty vault and nothing on GitHub
@@ -519,6 +538,141 @@ class Sync:
         git.ok("update-ref", self.refs + "/pushed", pushed)
         git.ok("update-ref", f"refs/remotes/origin/{branch}", pushed)
         return self.done(tip, pushed, before)
+
+    def run_root(self):
+        """The vault is the whole repository: its own branch is merged with
+        the remote one and pushed as it is."""
+        git = self.git
+
+        # 1. Can the host be reached, and what is on it?
+        self.step(f"Contacting {HOST}")
+        head, branches = self.remote_refs()
+
+        # 2. The vault gets its own repository the first time.
+        self.step("Checking the vault")
+        code, out, err = git.run("rev-parse", "--show-prefix")
+        if code != 0 and not re.search(rb"not a git repository", err, re.I):
+            raise Failure(git_error(err))
+        if code != 0 or out.strip():
+            self.step("Setting up git")
+            git.ok("init", "-q", "-b", head or "main")
+
+        # 3. origin points at the chosen repository.
+        current = git.maybe("remote", "get-url", "origin")
+        if current != self.url:
+            git.ok("remote", "set-url" if current else "add", "origin", self.url)
+
+        # 4. A merge left by an interrupted sync is abandoned.
+        if git.maybe("rev-parse", "-q", "--verify", "MERGE_HEAD"):
+            git.ok("merge", "--abort")
+        branch = branch_name(git.maybe("symbolic-ref", "--short", "-q", "HEAD"))
+        if not branch:
+            raise Failure("The vault's git repository isn't on a branch.")
+        lfs = self.uses_lfs()
+
+        # 5. Commit this machine's changes: everything git doesn't ignore.
+        self.step("Saving your changes")
+        git.ok("add", "-A", "--", ":/", timeout=NETWORK if lfs else LOCAL)
+        self.check_sizes()
+        staged = git.paths("diff", "--cached", "--name-only", "-z")
+        if staged:
+            git.ok("commit", "-q", "--no-verify", "-m", commit_message(staged, self.when))
+        before = git.maybe("rev-parse", "-q", "--verify", "HEAD^{commit}")
+
+        # 6-8. Merge the remote branch, then push. Never forced: when the
+        #      remote moved on in between, fetch and merge once more.
+        for attempt in (1, 2):
+            tip = ""
+            if branch in branches:
+                self.step(f"Getting changes from {HOST}")
+                git.ok("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}",
+                       timeout=NETWORK)
+                tip = git.maybe("rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}^{{commit}}")
+                if not tip:
+                    raise Failure(f"Couldn't read the repository's {branch} branch.")
+                self.merge_branch(tip, before, lfs)
+            head_now = git.maybe("rev-parse", "-q", "--verify", "HEAD^{commit}")
+            if not head_now or head_now == tip:
+                break                                 # empty, or nothing to send
+            if lfs:
+                self.step("Uploading large files")
+                git.ok("lfs", "push", "origin", branch, timeout=NETWORK * 4)
+            self.step(f"Sending to {HOST}")
+            code, _, err = git.run("push", "-q", "origin", f"HEAD:refs/heads/{branch}", timeout=NETWORK)
+            if code == 0:
+                break
+            if attempt == 1 and re.search(rb"rejected|fetch first|non-fast-forward", err, re.I):
+                branches.add(branch)
+                continue
+            raise Failure(git_error(err))
+
+        # 9. Remember where this sync left the vault and the repository.
+        pushed = git.maybe("rev-parse", "-q", "--verify", "HEAD^{commit}")
+        if pushed:
+            git.ok("update-ref", self.refs + "/base", pushed)
+            git.ok("update-ref", self.refs + "/pushed", pushed)
+            git.ok("update-ref", f"refs/remotes/origin/{branch}", pushed)
+        return self.done_root(tip, pushed, before)
+
+    def uses_lfs(self):
+        """Whether the vault's files go through Git LFS: some are tracked as
+        LFS files, or .gitattributes says new ones will be. git-lfs uploads
+        from a pre-push hook, and hooks never run here, so the sync uploads
+        them itself."""
+        uses = bool(self.git.paths("ls-files", "-z", "--", ":(top,attr:filter=lfs)"))
+        if not uses:
+            try:
+                fd = os.open(os.path.join(self.vault, ".gitattributes"), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError:
+                return False
+            try:
+                uses = re.search(rb"\bfilter=lfs\b", os.read(fd, 65536)) is not None
+            finally:
+                os.close(fd)
+        if uses and not self.git.maybe("config", "--get", "filter.lfs.process"):
+            raise Failure("This repository uses Git LFS. Install git-lfs, then run git lfs install.")
+        return uses
+
+    def merge_branch(self, tip, before, lfs):
+        """The remote branch merged into the vault's own. A note changed on
+        both sides keeps the remote version under its name and this
+        machine's beside it."""
+        git = self.git
+        if before and git.run("merge-base", "--is-ancestor", tip, "HEAD")[0] == 0:
+            return                                   # nothing new on the remote
+        if before and git.run("merge-base", "HEAD", tip)[0] != 0:
+            raise Failure("The vault and the repository have no history in common. "
+                          "Clone the repository into the vault folder first, or untick "
+                          "\"Vault is the whole repository\".")
+        self.step("Merging")
+        self.merging = self.merged = True
+        timeout = NETWORK * 4 if lfs else LOCAL     # checking out LFS files downloads them
+        code, _, err = git.run("merge", "-q", "--no-edit", "-m", f"Sync: merge changes from {HOST}", tip,
+                               timeout=timeout)
+        if code != 0:
+            conflicted = git.paths("diff", "--name-only", "-z", "--diff-filter=U")
+            if not conflicted:
+                raise Failure(git_error(err))
+            for path in conflicted:
+                self.resolve(path)
+            git.ok("commit", "-q", "--no-verify", "--no-edit")
+        self.merging = False
+
+    def done_root(self, tip, pushed, before):
+        """What a sync at the root did: files sent are those the push changed
+        on the remote branch, files received those the merge changed here."""
+        git = self.git
+        sent = received = 0
+        if pushed and pushed != tip:
+            sent = len(git.paths(*(["diff", "--name-only", "-z", "--no-renames", tip, pushed] if tip else
+                                   ["ls-tree", "-r", "--name-only", "-z", pushed])))
+        if self.merged:
+            received = len([p for p in git.paths(*(["diff", "--name-only", "-z", "--no-renames", before, "HEAD"]
+                                                   if before else ["ls-tree", "-r", "--name-only", "-z", "HEAD"]))
+                            if not is_conflict_copy(p)])
+        return {"event": "done", "vault": self.vault, "sent": sent, "received": received,
+                "conflicts": self.conflicts[:MAX_LISTED], "conflictCount": len(self.conflicts),
+                "warnings": self.warnings[:MAX_LISTED]}
 
     def remote_refs(self):
         out = self.git.ok("ls-remote", "--symref", self.url, timeout=NETWORK, cap=4 * MiB).decode("utf-8", "replace")
@@ -657,7 +811,10 @@ class Sync:
             if fd is None:
                 continue
             try:
-                self.git.ok("cat-file", "blob", blob, cap=LIMIT_BYTES, sink=fd)
+                # Through the path's filters, so a Git LFS file is copied
+                # as its contents rather than its pointer.
+                self.git.ok("cat-file", "--filters", "--path=" + path, blob, cap=LIMIT_BYTES, sink=fd,
+                            timeout=NETWORK)
                 os.fsync(fd)
             except BaseException:
                 os.close(fd)
@@ -748,6 +905,9 @@ def on_term(signum, frame):
 
 def main(argv):
     signal.signal(signal.SIGTERM, on_term)
+    root = len(argv) > 3 and argv[3] == "--root"
+    if root:
+        argv = argv[:3] + argv[4:]
     if len(argv) < 4 or argv[1] not in ("status", "sync") or argv[3] != "--":
         return 2
     op = argv[1]
@@ -762,12 +922,14 @@ def main(argv):
         if not p or p in vaults or len(vaults) >= MAX_VAULTS:
             return 2
         vaults.append(p)
+    if root and len(vaults) > 1:
+        return 2                                     # one vault per repository at the root
     for vault in vaults:
         try:
             if op == "status":
-                emit(status(vault, url))
+                emit(status(vault, url, root))
             else:
-                job = Sync(vault, url, emit)
+                job = Sync(vault, url, emit, root)
                 try:
                     emit(job.run())
                 except BaseException:

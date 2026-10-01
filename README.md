@@ -118,6 +118,25 @@ printf 'protocol=https\nhost=git.example.com\nusername=you\npassword=<token>\n' 
 Vault Sync never prompts, so the login must already work with
 `git ls-remote https://git.example.com/you/notes.git`.
 
+## A vault that is the whole repository
+
+If your vault is already a git clone with the notes at the top level of the
+repository (kept with plain git, the Obsidian Git plugin or a git client), tick
+**Vault is the whole repository** under the URL. Then Sync now works on the
+vault's own branch, like a careful `git pull` and `git push`:
+
+1. It commits everything git doesn't ignore, `.obsidian` included, so your
+   `.gitignore` decides what is shared.
+2. It fetches the remote branch and merges it into yours. A note changed on
+   both sides is kept twice, as above.
+3. It uploads Git LFS files, when the repository uses LFS, then pushes your
+   branch. Your graph shows ordinary commits and merges.
+
+A repository at the root holds one vault, so ticking another vault replaces
+it. Sync refuses to merge histories that have nothing in common, and the
+`Vaults/<name>/` mode refuses to sync a vault that is a clone of the
+repository, so the two layouts can never be mixed.
+
 ## What a sync does
 
 One repository can hold any number of vaults. Each vault gets its own folder:
